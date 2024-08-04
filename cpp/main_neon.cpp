@@ -1,10 +1,13 @@
+#ifdef USE_NEON
 #include <arm_neon.h>
+#endif
 #include <opencv2/opencv.hpp>
 #include <cmath>
 #include <iostream>
 #include <vector>
 #include <thread>
 
+#ifdef USE_NEON
 cv::Vec3b trilinearInterpolateNeon(const cv::Mat& haldImg, const float& clutR, const float& clutG, const float& clutB, int clutSize) {
     int r0 = std::floor(clutR);
     int r1 = std::min(r0 + 1, clutSize - 1);
@@ -59,6 +62,7 @@ cv::Vec3b trilinearInterpolateNeon(const cv::Mat& haldImg, const float& clutR, c
     vst1_lane_u8(&finalColor[2], finalColor8, 2);
     return finalColor;
 }
+#endif
 
 // Function to perform trilinear interpolation on the CLUT
 cv::Vec3b trilinearInterpolate(const cv::Mat& haldImg, float clutR, float clutG, float clutB, int clutSize) {
@@ -103,21 +107,22 @@ void applyHaldClutPartial(const cv::Mat& haldImg, const cv::Mat& srcImg, cv::Mat
             float clutG = srcImg.at<cv::Vec3b>(i, j)[1] * scale;
             float clutB = srcImg.at<cv::Vec3b>(i, j)[0] * scale;
 
+#ifdef USE_NEON
             dstImg.at<cv::Vec3b>(i, j) = trilinearInterpolateNeon(haldImg, clutR, clutG, clutB, clutSize);
+#else
+            dstImg.at<cv::Vec3b>(i, j) = trilinearInterpolate(haldImg, clutR, clutG, clutB, clutSize);
+#endif
         }
     }
 }
 
 // Main function to apply HALD CLUT with threading
 void applyHaldClutThreaded(const cv::Mat& haldImg, const cv::Mat& img, cv::Mat& outputImg) {
-    std::cout << 0 << std::endl;
     int haldW = haldImg.cols, haldH = haldImg.rows;
     int clutSize = std::cbrt(haldW * haldH);
-    int numThreads = 4;//std::thread::hardware_concurrency();
+    int numThreads = std::thread::hardware_concurrency();
     int rowsPerThread = img.rows / numThreads;
-    std::cout << 1 << std::endl;
     std::vector<std::thread> threads;
-    std::cout << 2 << std::endl;
     std::cout << "Concurrent thread count: " << numThreads << std::endl;
 
     for (int i = 0; i < numThreads; ++i) {
