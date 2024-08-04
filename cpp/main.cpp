@@ -53,8 +53,8 @@ void applyHaldClut(const cv::Mat& haldImg, cv::Mat& img) {
 }
 
 int main() {
-    cv::Mat haldImg = cv::imread("../dehancer-fujichrome-velvia-50-k2383.png", cv::IMREAD_COLOR);
-    cv::Mat image = cv::imread("../orig_orig.jpg", cv::IMREAD_COLOR);
+    cv::Mat haldImg = cv::imread("/home/rafael/.local/bin/luts/dehancer-fujichrome-velvia-50-k2383.png");
+    cv::Mat image = cv::imread("/home/rafael/phone/DCIM/OpenCamera/IMG_20240727_115819.jpg");
 
     applyHaldClut(haldImg, image);
 
