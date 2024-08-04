@@ -13,27 +13,45 @@ cv::Vec3b trilinearInterpolateNeon(const cv::Mat& haldImg, const float& clutR, c
     int b0 = std::floor(clutB);
     int b1 = std::min(b0 + 1, clutSize - 1);
 
-    float32x4_t rRatio = vdupq_n_f32(clutR - r0);
-    float32x4_t gRatio = vdupq_n_f32(clutG - g0);
-    float32x4_t bRatio = vdupq_n_f32(clutB - b0);
+    float rRatio = clutR - r0;
+    float gRatio = clutG - g0;
+    float bRatio = clutB - b0;
 
-    // Load pixel values into NEON registers
-    uint8x8_t c000 = vld1_u8((uint8_t*) &haldImg.at<cv::Vec3b>(r0 + clutSize * (g0 + clutSize * b0)));
-    uint8x8_t c100 = vld1_u8((uint8_t*) &haldImg.at<cv::Vec3b>(r1 + clutSize * (g0 + clutSize * b0)));
-    uint8x8_t c010 = vld1_u8((uint8_t*) &haldImg.at<cv::Vec3b>(r0 + clutSize * (g1 + clutSize * b0)));
-    uint8x8_t c110 = vld1_u8((uint8_t*) &haldImg.at<cv::Vec3b>(r1 + clutSize * (g1 + clutSize * b0)));
-    uint8x8_t c001 = vld1_u8((uint8_t*) &haldImg.at<cv::Vec3b>(r0 + clutSize * (g0 + clutSize * b1)));
-    uint8x8_t c101 = vld1_u8((uint8_t*) &haldImg.at<cv::Vec3b>(r1 + clutSize * (g0 + clutSize * b1)));
-    uint8x8_t c011 = vld1_u8((uint8_t*) &haldImg.at<cv::Vec3b>(r0 + clutSize * (g1 + clutSize * b1)));
-    uint8x8_t c111 = vld1_u8((uint8_t*) &haldImg.at<cv::Vec3b>(r1 + clutSize * (g1 + clutSize * b1)));
+    // Load initial corner colors into NEON vectors
+    uint8x8_t c000 = vld1_u8((uint8_t*)&haldImg.at<cv::Vec3b>(r0, g0 + clutSize * b0));
+    uint8x8_t c100 = vld1_u8((uint8_t*)&haldImg.at<cv::Vec3b>(r1, g0 + clutSize * b0));
+    uint8x8_t c010 = vld1_u8((uint8_t*)&haldImg.at<cv::Vec3b>(r0, g1 + clutSize * b0));
+    uint8x8_t c110 = vld1_u8((uint8_t*)&haldImg.at<cv::Vec3b>(r1, g1 + clutSize * b0));
+    uint8x8_t c001 = vld1_u8((uint8_t*)&haldImg.at<cv::Vec3b>(r0, g0 + clutSize * b1));
+    uint8x8_t c101 = vld1_u8((uint8_t*)&haldImg.at<cv::Vec3b>(r1, g0 + clutSize * b1));
+    uint8x8_t c011 = vld1_u8((uint8_t*)&haldImg.at<cv::Vec3b>(r0, g1 + clutSize * b1));
+    uint8x8_t c111 = vld1_u8((uint8_t*)&haldImg.at<cv::Vec3b>(r1, g1 + clutSize * b1));
 
-    // Perform the bilinear interpolation using NEON intrinsics
-    float32x4_t c00 = vmlaq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(c000)))), vsubq_f32(vdupq_n_f32(1.0), bRatio)),
-                                 vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(c100)))), bRatio);
-    // Additional interpolation steps would follow a similar pattern...
+    // Interpolate along B (blue channel)
+    float32x4_t bRatioVec = vdupq_n_f32(bRatio);
+    float32x4_t oneMinusBRatio = vdupq_n_f32(1.0f - bRatio);
+    float32x4_t c00 = vmlaq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(c000)))), oneMinusBRatio),
+                                vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(c100)))), bRatioVec);
+    float32x4_t c01 = vmlaq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(c001)))), oneMinusBRatio),
+                                vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(c101)))), bRatioVec);
+    float32x4_t c10 = vmlaq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(c010)))), oneMinusBRatio),
+                                vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(c110)))), bRatioVec);
+    float32x4_t c11 = vmlaq_f32(vmulq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(c011)))), oneMinusBRatio),
+                                vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(c111)))), bRatioVec);
+
+    // Interpolate along G (green channel)
+    float32x4_t gRatioVec = vdupq_n_f32(gRatio);
+    float32x4_t oneMinusGRatio = vdupq_n_f32(1.0f - gRatio);
+    float32x4_t c0 = vmlaq_f32(vmulq_f32(c00, oneMinusGRatio), c10, gRatioVec);
+    float32x4_t c1 = vmlaq_f32(vmulq_f32(c01, oneMinusGRatio), c11, gRatioVec);
+
+    // Interpolate along R (red channel)
+    float32x4_t rRatioVec = vdupq_n_f32(rRatio);
+    float32x4_t oneMinusRRatio = vdupq_n_f32(1.0f - rRatio);
+    float32x4_t finalColorVec = vmlaq_f32(vmulq_f32(c0, oneMinusRRatio), c1, rRatioVec);
 
     // Convert back to uchar and return
-    uint16x4_t finalColor16 = vmovn_u32(vcvtq_u32_f32(c00));
+    uint16x4_t finalColor16 = vmovn_u32(vcvtq_u32_f32(finalColorVec));
     uint8x8_t finalColor8 = vqmovn_u16(vcombine_u16(finalColor16, finalColor16));
     cv::Vec3b finalColor;
     vst1_lane_u8(&finalColor[0], finalColor8, 0);
@@ -92,11 +110,14 @@ void applyHaldClutPartial(const cv::Mat& haldImg, const cv::Mat& srcImg, cv::Mat
 
 // Main function to apply HALD CLUT with threading
 void applyHaldClutThreaded(const cv::Mat& haldImg, const cv::Mat& img, cv::Mat& outputImg) {
+    std::cout << 0 << std::endl;
     int haldW = haldImg.cols, haldH = haldImg.rows;
     int clutSize = std::cbrt(haldW * haldH);
-    int numThreads = std::thread::hardware_concurrency();
+    int numThreads = 4;//std::thread::hardware_concurrency();
     int rowsPerThread = img.rows / numThreads;
+    std::cout << 1 << std::endl;
     std::vector<std::thread> threads;
+    std::cout << 2 << std::endl;
     std::cout << "Concurrent thread count: " << numThreads << std::endl;
 
     for (int i = 0; i < numThreads; ++i) {
