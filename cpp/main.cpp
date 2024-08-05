@@ -52,13 +52,31 @@ void applyHaldClut(const cv::Mat& haldImg, cv::Mat& img) {
     }
 }
 
-int main() {
-    cv::Mat haldImg = cv::imread("/home/rafael/.local/bin/luts/dehancer-fujichrome-velvia-50-k2383.png");
-    cv::Mat image = cv::imread("/home/rafael/phone/DCIM/OpenCamera/IMG_20240727_115819.jpg");
+int main(int argc, char** argv) {
+    if (argc != 4) {
+        std::cerr << "Usage: " << argv[0] << " <LUT_image_path> <photo_path> <output_path>\n";
+        return 1;
+    }
+
+    std::string lutImagePath = argv[1];
+    std::string imagePath = argv[2];
+    std::string outputPath = argv[3];
+
+    cv::Mat haldImg = cv::imread(lutImagePath, cv::IMREAD_COLOR);
+    if (haldImg.empty()) {
+        std::cerr << "Error: Could not open or find the HALD image at " << lutImagePath << std::endl;
+        return 1;
+    }
+
+    cv::Mat image = cv::imread(imagePath, cv::IMREAD_COLOR);
+    if (image.empty()) {
+        std::cerr << "Error: Could not open or find the image at " << imagePath << std::endl;
+        return 1;
+    }
+    cv::Mat filtered(image.size(), image.type());
 
     applyHaldClut(haldImg, image);
 
-    cv::imwrite("filtered.jpg", image);
-    std::cout << "Application of HALD CLUT completed." << std::endl;
+    cv::imwrite(outputPath, image);
     return 0;
 }
