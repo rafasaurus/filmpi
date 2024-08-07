@@ -108,6 +108,33 @@ void applyHaldClutPartialNeon(const cv::Mat& haldImg, const cv::Mat& srcImg, cv:
     }
 }
 
+void applyHaldClutPartialNeon4(const cv::Mat& haldImg, const cv::Mat& srcImg, cv::Mat& dstImg, int startRow, int endRow, int clutSize) {
+    const float scale = (clutSize - 1) / 255.0f;
+    uint32x4_t clutSizeSquared = vmovq_n_u32(clutSize * clutSize);  // Vector with clutSize * clutSize repeated
+
+    for (int i = startRow; i < endRow; ++i) {
+        for (int j = 0; j < srcImg.cols; j += 4) { // Process 4 pixels at a time
+            // Load 4 pixels
+            uint8x8x3_t src_pixel = vld3_u8(srcImg.ptr<uint8_t>(i) + j * 3);
+
+            // Convert 8-bit integers to 16-bit and then to 32-bit floats, apply scaling
+            float32x4_t clutR = vmulq_n_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(src_pixel.val[2])))), scale);
+            float32x4_t clutG = vmulq_n_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(src_pixel.val[1])))), scale);
+            float32x4_t clutB = vmulq_n_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(src_pixel.val[0])))), scale);
+
+            // Compute indices for the lookup table
+            uint32x4_t index = vaddq_u32(vcvtq_u32_f32(clutR),
+                                         vmlaq_u32(vmulq_n_u32(vcvtq_u32_f32(clutG), clutSize),
+                                                   vcvtq_u32_f32(clutB), clutSizeSquared));
+
+            // Load and store results
+            for (int k = 0; k < 4; ++k) {
+                dstImg.at<cv::Vec3b>(i, j + k) = haldImg.at<cv::Vec3b>(vgetq_lane_u32(index, k));
+            }
+        }
+    }
+}
+
 // Main function to apply HALD CLUT with threading
 void applyHaldClutThreaded(const cv::Mat& haldImg, const cv::Mat& img, cv::Mat& outputImg) {
     int haldW = haldImg.cols, haldH = haldImg.rows;
@@ -123,7 +150,7 @@ void applyHaldClutThreaded(const cv::Mat& haldImg, const cv::Mat& img, cv::Mat& 
         if (i == numThreads - 1) {
             endRow = img.rows; // Ensure the last thread covers all remaining rows
         }
-        threads.emplace_back(applyHaldClutPartialNeon, std::cref(haldImg), std::cref(img), std::ref(outputImg), startRow, endRow, clutSize);
+        threads.emplace_back(applyHaldClutPartialNeon4, std::cref(haldImg), std::cref(img), std::ref(outputImg), startRow, endRow, clutSize);
     }
 
     for (auto& thread : threads) {
