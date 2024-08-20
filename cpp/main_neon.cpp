@@ -8,6 +8,95 @@
 #include <thread>
 
 #ifdef USE_NEON
+// Hypothetical function to gather uchar data based on uint32x4_t indices
+void gather_neon(const cv::Mat& img, uint32x4_t indices, uint8x8x3_t& result) {
+    uint32_t idx[4];
+    vst1q_u32(idx, indices);
+    for (int i = 0; i < 4; ++i) {
+        cv::Vec3b pixel = img.at<cv::Vec3b>(idx[i]);
+        result.val[0][i] = pixel[0]; // B
+        result.val[1][i] = pixel[1]; // G
+        result.val[2][i] = pixel[2]; // R
+    }
+}
+
+float32x4_t trilinearInterpolateNeonNew(const cv::Mat& haldImg, const float32x4_t& clutR, const float32x4_t& clutG, const float32x4_t& clutB, int clutSize) {
+    uint32x4_t r0 = vcvtq_u32_f32(clutR);
+    uint32x4_t g0 = vcvtq_u32_f32(clutG);
+    uint32x4_t b0 = vcvtq_u32_f32(clutB);
+
+    uint32x4_t r1 = vaddq_u32(r0, vdupq_n_u32(1));
+    uint32x4_t g1 = vaddq_u32(g0, vdupq_n_u32(1));
+    uint32x4_t b1 = vaddq_u32(b0, vdupq_n_u32(1));
+
+    float32x4_t r1f = vcvtq_f32_u32(r1);
+    float32x4_t g1f = vcvtq_f32_u32(g1);
+    float32x4_t b1f = vcvtq_f32_u32(b1);
+
+    float32x4_t ratioR = vsubq_f32(clutR, r1f);
+    float32x4_t ratioG = vsubq_f32(clutG, g1f);
+    float32x4_t ratioB = vsubq_f32(clutB, b1f);
+    // Compute the indices for accessing the image data
+    uint32x4_t index000 = vmlaq_n_u32(vmlaq_n_u32(vmulq_n_u32(b0, clutSize), g0, clutSize), r0, 1);
+    uint32x4_t index100 = vmlaq_n_u32(vmlaq_n_u32(vmulq_n_u32(b0, clutSize), g0, clutSize), r1, 1);
+    uint32x4_t index010 = vmlaq_n_u32(vmlaq_n_u32(vmulq_n_u32(b0, clutSize), g1, clutSize), r0, 1);
+    uint32x4_t index110 = vmlaq_n_u32(vmlaq_n_u32(vmulq_n_u32(b0, clutSize), g1, clutSize), r1, 1);
+    uint32x4_t index001 = vmlaq_n_u32(vmlaq_n_u32(vmulq_n_u32(b1, clutSize), g0, clutSize), r0, 1);
+    uint32x4_t index101 = vmlaq_n_u32(vmlaq_n_u32(vmulq_n_u32(b1, clutSize), g0, clutSize), r1, 1);
+    uint32x4_t index011 = vmlaq_n_u32(vmlaq_n_u32(vmulq_n_u32(b1, clutSize), g1, clutSize), r0, 1);
+    uint32x4_t index111 = vmlaq_n_u32(vmlaq_n_u32(vmulq_n_u32(b1, clutSize), g1, clutSize), r1, 1);
+
+    uint8x8x3_t c000, c100, c010, c110, c001, c101, c011, c111;
+    gather_neon(haldImg, index000, c000);
+    gather_neon(haldImg, index100, c100);
+    gather_neon(haldImg, index010, c010);
+    gather_neon(haldImg, index110, c110);
+    gather_neon(haldImg, index001, c001);
+    gather_neon(haldImg, index101, c101);
+    gather_neon(haldImg, index011, c011);
+    gather_neon(haldImg, index111, c111);
+    
+    float32x4_t result = vcvtq_f32_u32(index000);
+    return result;
+
+}
+
+#endif
+
+cv::Vec3b trilinearInterpolate(const cv::Mat& haldImg, float clutR, float clutG, float clutB, int clutSize) {
+    int r0 = std::floor(clutR);
+    int r1 = std::min(r0 + 1, clutSize - 1);
+    int g0 = std::floor(clutG);
+    int g1 = std::min(g0 + 1, clutSize - 1);
+    int b0 = std::floor(clutB);
+    int b1 = std::min(b0 + 1, clutSize - 1);
+
+    float rRatio = clutR - r0;
+    float gRatio = clutG - g0;
+    float bRatio = clutB - b0;
+
+    cv::Vec3b c000 = haldImg.at<cv::Vec3b>(r0 + clutSize * (g0 + clutSize * b0));
+    cv::Vec3b c100 = haldImg.at<cv::Vec3b>(r1 + clutSize * (g0 + clutSize * b0));
+    cv::Vec3b c010 = haldImg.at<cv::Vec3b>(r0 + clutSize * (g1 + clutSize * b0));
+    cv::Vec3b c110 = haldImg.at<cv::Vec3b>(r1 + clutSize * (g1 + clutSize * b0));
+    cv::Vec3b c001 = haldImg.at<cv::Vec3b>(r0 + clutSize * (g0 + clutSize * b1));
+    cv::Vec3b c101 = haldImg.at<cv::Vec3b>(r1 + clutSize * (g0 + clutSize * b1));
+    cv::Vec3b c011 = haldImg.at<cv::Vec3b>(r0 + clutSize * (g1 + clutSize * b1));
+    cv::Vec3b c111 = haldImg.at<cv::Vec3b>(r1 + clutSize * (g1 + clutSize * b1));
+
+    cv::Vec3b c00 = c000 * (1 - bRatio) + c100 * bRatio;
+    cv::Vec3b c01 = c001 * (1 - bRatio) + c101 * bRatio;
+    cv::Vec3b c10 = c010 * (1 - bRatio) + c110 * bRatio;
+    cv::Vec3b c11 = c011 * (1 - bRatio) + c111 * bRatio;
+
+    cv::Vec3b c0 = c00 * (1 - gRatio) + c10 * gRatio;
+    cv::Vec3b c1 = c01 * (1 - gRatio) + c11 * gRatio;
+
+    cv::Vec3b finalColor = c0 * (1 - rRatio) + c1 * rRatio;
+    return finalColor;
+}
+
+#ifdef USE_NEON
 cv::Vec3b trilinearInterpolateNeon(const cv::Mat& haldImg, const float& clutR, const float& clutG, const float& clutB, int clutSize) {
     int r0 = std::floor(clutR);
     int r1 = std::min(r0 + 1, clutSize - 1);
@@ -73,11 +162,13 @@ void applyHaldClutPartial(const cv::Mat& haldImg, const cv::Mat& srcImg, cv::Mat
 
 #ifdef USE_NEON
             dstImg.at<cv::Vec3b>(i, j) = trilinearInterpolateNeon(haldImg, clutR, clutG, clutB, clutSize);
+#else
+            dstImg.at<cv::Vec3b>(i, j) = trilinearInterpolate(haldImg, clutR, clutG, clutB, clutSize);
 #endif
         }
     }
 }
-
+#ifdef USE_NEON
 void applyHaldClutPartialNeon(const cv::Mat& haldImg, const cv::Mat& srcImg, cv::Mat& dstImg, int startRow, int endRow, int clutSize) {
     const float scale = (clutSize - 1) / 255.0f;
     uint32x4_t clutSizeSquared = vmovq_n_u32(clutSize * clutSize);  // Create a vector with clutSize * clutSize repeated
@@ -148,7 +239,8 @@ void applyHaldClutPartialNeon4I(const cv::Mat& haldImg, const cv::Mat& srcImg, c
             float32x4_t clutR = vmulq_n_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(src_pixel.val[2])))), scale);
             float32x4_t clutG = vmulq_n_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(src_pixel.val[1])))), scale);
             float32x4_t clutB = vmulq_n_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(vmovl_u8(src_pixel.val[0])))), scale);
-                        // Extract individual elements
+            /*
+            // Extract individual elements
             float r0 = vgetq_lane_f32(clutR, 0);
             float g0 = vgetq_lane_f32(clutG, 0);
             float b0 = vgetq_lane_f32(clutB, 0);
@@ -170,16 +262,23 @@ void applyHaldClutPartialNeon4I(const cv::Mat& haldImg, const cv::Mat& srcImg, c
             dstImg.at<cv::Vec3b>(i, j+1) = trilinearInterpolateNeon(haldImg, r1, g1, b1, clutSize);
             dstImg.at<cv::Vec3b>(i, j+2) = trilinearInterpolateNeon(haldImg, r2, g2, b2, clutSize);
             dstImg.at<cv::Vec3b>(i, j+3) = trilinearInterpolateNeon(haldImg, r3, g3, b3, clutSize);
-
+            */
+            float32x4_t result = trilinearInterpolateNeonNew(haldImg, clutR, clutG, clutB, clutSize);
+            dstImg.at<cv::Vec3b>(i, j) = vgetq_lane_f32(result, 0);
+            dstImg.at<cv::Vec3b>(i, j+1) = vgetq_lane_f32(result, 1);
+            dstImg.at<cv::Vec3b>(i, j+2) = vgetq_lane_f32(result, 2);
+            dstImg.at<cv::Vec3b>(i, j+3) = vgetq_lane_f32(result, 3);
         }
     }
 }
+#endif
 
 // Main function to apply HALD CLUT with threading
 void applyHaldClutThreaded(const cv::Mat& haldImg, const cv::Mat& img, cv::Mat& outputImg) {
     int haldW = haldImg.cols, haldH = haldImg.rows;
     int clutSize = std::cbrt(haldW * haldH);
     int numThreads = std::thread::hardware_concurrency();
+    numThreads = 4;
     int rowsPerThread = img.rows / numThreads;
     std::vector<std::thread> threads;
     std::cout << "Concurrent thread count: " << numThreads << std::endl;
@@ -190,7 +289,11 @@ void applyHaldClutThreaded(const cv::Mat& haldImg, const cv::Mat& img, cv::Mat& 
         if (i == numThreads - 1) {
             endRow = img.rows; // Ensure the last thread covers all remaining rows
         }
-        threads.emplace_back(applyHaldClutPartialNeon4I, std::cref(haldImg), std::cref(img), std::ref(outputImg), startRow, endRow, clutSize);
+#ifdef WITH_NEON
+        threads.emplace_back(applyHaldClutPartialNeon4, std::cref(haldImg), std::cref(img), std::ref(outputImg), startRow, endRow, clutSize);
+#else
+        threads.emplace_back(applyHaldClutPartial, std::cref(haldImg), std::cref(img), std::ref(outputImg), startRow, endRow, clutSize);
+#endif
     }
 
     for (auto& thread : threads) {
