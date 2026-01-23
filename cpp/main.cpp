@@ -2,11 +2,13 @@
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#include <exiv2/exiv2.hpp>
 #include <cmath>
 #include <iostream>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <string>
 
 inline void trilinearInterpolate(const unsigned char* __restrict haldData, float clutR, float clutG, float clutB, int clutSize, int clutSizeSquared, unsigned char* __restrict result) {
     int r0 = static_cast<int>(clutR);
@@ -140,17 +142,18 @@ void applyHaldClut(const unsigned char* __restrict haldData, int haldW, int hald
     }
 }
 
-std::vector<std::vector<unsigned char>> extractNonExifAppSegments(const char* imagePath) {
-    std::vector<std::vector<unsigned char>> appSegments;
+
+std::vector<unsigned char> extractApp2Segments(const char* imagePath) {
+    std::vector<unsigned char> app2Data;
     FILE* inputFile = fopen(imagePath, "rb");
     if (!inputFile) {
-        return appSegments;
+        return app2Data;
     }
 
     unsigned char header[2];
     if (fread(header, 1, 2, inputFile) != 2 || header[0] != 0xFF || header[1] != 0xD8) {
         fclose(inputFile);
-        return appSegments;
+        return app2Data;
     }
 
     while (!feof(inputFile)) {
@@ -159,7 +162,7 @@ std::vector<std::vector<unsigned char>> extractNonExifAppSegments(const char* im
 
         if (marker[0] != 0xFF) break;
 
-        if (marker[1] >= 0xE0 && marker[1] <= 0xEF) {
+        if (marker[1] == 0xE2) {
             unsigned char lenBytes[2];
             if (fread(lenBytes, 1, 2, inputFile) != 2) break;
             unsigned short segLen = (lenBytes[0] << 8) | lenBytes[1];
@@ -169,11 +172,7 @@ std::vector<std::vector<unsigned char>> extractNonExifAppSegments(const char* im
                 std::vector<unsigned char> segment(segLen + 2);
                 fseek(inputFile, segmentStart, SEEK_SET);
                 if (fread(segment.data(), 1, segLen + 2, inputFile) == segLen + 2) {
-                    if (segLen >= 6 && memcmp(&segment[4], "Exif\0\0", 6) != 0) {
-                        appSegments.push_back(std::move(segment));
-                    } else if (segLen < 6) {
-                        appSegments.push_back(std::move(segment));
-                    }
+                    app2Data.insert(app2Data.end(), segment.begin(), segment.end());
                 }
                 fseek(inputFile, segmentStart + segLen + 2, SEEK_SET);
             } else {
@@ -181,63 +180,7 @@ std::vector<std::vector<unsigned char>> extractNonExifAppSegments(const char* im
             }
         } else if (marker[1] >= 0xC0 && marker[1] <= 0xC3) {
             break;
-        } else if (marker[1] == 0xD8 || marker[1] == 0xD9) {
-            break;
-        } else if (marker[1] == 0xFF) {
-            continue;
-        } else {
-            break;
-        }
-    }
-
-    fclose(inputFile);
-    return appSegments;
-}
-
-std::vector<unsigned char> extractExifSegment(const char* imagePath) {
-    std::vector<unsigned char> exifSegment;
-    FILE* inputFile = fopen(imagePath, "rb");
-    if (!inputFile) {
-        return exifSegment;
-    }
-
-    unsigned char header[2];
-    if (fread(header, 1, 2, inputFile) != 2 || header[0] != 0xFF || header[1] != 0xD8) {
-        fclose(inputFile);
-        return exifSegment;
-    }
-
-    while (!feof(inputFile)) {
-        unsigned char marker[2];
-        if (fread(marker, 1, 2, inputFile) != 2) break;
-
-        if (marker[0] != 0xFF) break;
-
-        if (marker[1] == 0xE1) {
-            unsigned char lenBytes[2];
-            if (fread(lenBytes, 1, 2, inputFile) != 2) break;
-            unsigned short segLen = (lenBytes[0] << 8) | lenBytes[1];
-
-            if (segLen >= 6) {
-                long segmentStart = ftell(inputFile) - 4;
-                unsigned char identifier[6];
-                if (fread(identifier, 1, 6, inputFile) == 6) {
-                    if (memcmp(identifier, "Exif\0\0", 6) == 0) {
-                        exifSegment.resize(segLen + 2);
-                        fseek(inputFile, segmentStart, SEEK_SET);
-                        if (fread(exifSegment.data(), 1, segLen + 2, inputFile) == segLen + 2) {
-                            break;
-                        }
-                    } else {
-                        fseek(inputFile, segLen - 8, SEEK_CUR);
-                    }
-                }
-            } else {
-                break;
-            }
-        } else if (marker[1] >= 0xC0 && marker[1] <= 0xC3) {
-            break;
-        } else if (marker[1] >= 0xE0 && marker[1] <= 0xEF) {
+        } else if (marker[1] >= 0xE0 && marker[1] <= 0xEF && marker[1] != 0xE2) {
             unsigned char lenBytes[2];
             if (fread(lenBytes, 1, 2, inputFile) != 2) break;
             unsigned short segLen = (lenBytes[0] << 8) | lenBytes[1];
@@ -247,91 +190,11 @@ std::vector<unsigned char> extractExifSegment(const char* imagePath) {
     }
 
     fclose(inputFile);
-    return exifSegment;
+    return app2Data;
 }
 
-bool copyMetadata(const char* sourcePath, const char* destPath) {
-    std::vector<unsigned char> exifSegment = extractExifSegment(sourcePath);
-    if (exifSegment.empty()) {
-        return true;
-    }
-
-    FILE* jpegFile = fopen(destPath, "rb");
-    if (!jpegFile) {
-        return false;
-    }
-
-    fseek(jpegFile, 0, SEEK_END);
-    long fileSize = ftell(jpegFile);
-    fseek(jpegFile, 0, SEEK_SET);
-
-    if (fileSize < 2) {
-        fclose(jpegFile);
-        return false;
-    }
-
-    constexpr size_t CHUNK_SIZE = 65536;
-    std::vector<unsigned char> jpegData;
-    jpegData.reserve(fileSize);
-    
-    unsigned char buffer[CHUNK_SIZE];
-    size_t totalRead = 0;
-    while (totalRead < static_cast<size_t>(fileSize)) {
-        size_t toRead = std::min(CHUNK_SIZE, static_cast<size_t>(fileSize) - totalRead);
-        size_t bytesRead = fread(buffer, 1, toRead, jpegFile);
-        if (bytesRead == 0) break;
-        jpegData.insert(jpegData.end(), buffer, buffer + bytesRead);
-        totalRead += bytesRead;
-    }
-    fclose(jpegFile);
-
-    if (jpegData.size() < 2 || jpegData[0] != 0xFF || jpegData[1] != 0xD8) {
-        return false;
-    }
-
-    size_t insertPos = 2;
-    const unsigned char* __restrict dataPtr = jpegData.data();
-    while (insertPos < jpegData.size() - 1) {
-        if (dataPtr[insertPos] == 0xFF && dataPtr[insertPos + 1] == 0xE1) {
-            insertPos += 2;
-            if (insertPos + 1 < jpegData.size()) {
-                unsigned short segLen = (dataPtr[insertPos] << 8) | dataPtr[insertPos + 1];
-                insertPos += segLen;
-            } else {
-                break;
-            }
-        } else if (dataPtr[insertPos] == 0xFF && dataPtr[insertPos + 1] >= 0xC0 && dataPtr[insertPos + 1] <= 0xC3) {
-            break;
-        } else if (dataPtr[insertPos] == 0xFF && dataPtr[insertPos + 1] >= 0xE0 && dataPtr[insertPos + 1] <= 0xEF) {
-            insertPos += 2;
-            if (insertPos + 1 < jpegData.size()) {
-                unsigned short segLen = (dataPtr[insertPos] << 8) | dataPtr[insertPos + 1];
-                insertPos += segLen;
-            } else {
-                break;
-            }
-        } else if (dataPtr[insertPos] == 0xFF) {
-            insertPos++;
-        } else {
-            insertPos++;
-        }
-    }
-
-    FILE* outFile = fopen(destPath, "wb");
-    if (!outFile) {
-        return false;
-    }
-
-    fwrite(dataPtr, 1, insertPos, outFile);
-    fwrite(exifSegment.data(), 1, exifSegment.size(), outFile);
-    fwrite(dataPtr + insertPos, 1, jpegData.size() - insertPos, outFile);
-    fclose(outFile);
-
-    return true;
-}
-
-bool insertAppSegments(const char* outputPath, const std::vector<std::vector<unsigned char>>& appSegments) {
-    if (appSegments.empty()) {
+bool insertApp2Segments(const char* outputPath, const std::vector<unsigned char>& app2Data) {
+    if (app2Data.empty()) {
         return true;
     }
 
@@ -394,14 +257,55 @@ bool insertAppSegments(const char* outputPath, const std::vector<std::vector<uns
     }
 
     fwrite(dataPtr, 1, insertPos, outFile);
-    for (const auto& segment : appSegments) {
-        fwrite(segment.data(), 1, segment.size(), outFile);
-    }
+    fwrite(app2Data.data(), 1, app2Data.size(), outFile);
     fwrite(dataPtr + insertPos, 1, jpegData.size() - insertPos, outFile);
     fclose(outFile);
 
     return true;
 }
+
+bool copyMetadata(const char* sourcePath, const char* destPath, const char* lutName) {
+    try {
+        Exiv2::Image::UniquePtr sourceImage = Exiv2::ImageFactory::open(sourcePath);
+        if (!sourceImage.get()) {
+            return false;
+        }
+        sourceImage->readMetadata();
+
+        Exiv2::Image::UniquePtr destImage = Exiv2::ImageFactory::open(destPath);
+        if (!destImage.get()) {
+            return false;
+        }
+
+        Exiv2::ExifData exifData = sourceImage->exifData();
+        Exiv2::IptcData iptcData = sourceImage->iptcData();
+        Exiv2::XmpData xmpData = sourceImage->xmpData();
+
+        if (lutName && strlen(lutName) > 0) {
+            exifData["Exif.Image.ImageDescription"] = lutName;
+            iptcData["Iptc.Application2.Caption"] = lutName;
+            xmpData["Xmp.dc.description"] = lutName;
+        }
+
+        destImage->setExifData(exifData);
+        destImage->setIptcData(iptcData);
+        destImage->setXmpData(xmpData);
+        destImage->setComment(sourceImage->comment());
+        destImage->writeMetadata();
+
+        destImage.reset();
+
+        std::vector<unsigned char> app2Data = extractApp2Segments(sourcePath);
+        if (!app2Data.empty()) {
+            insertApp2Segments(destPath, app2Data);
+        }
+
+        return true;
+    } catch (const Exiv2::Error& e) {
+        return false;
+    }
+}
+
 
 int main(int argc, char** argv) {
     if (argc != 4) {
@@ -436,16 +340,22 @@ int main(int argc, char** argv) {
 
     applyHaldClut(haldData, haldW, haldH, imgData, imgW, imgH);
 
+    const char* lutBasename = strrchr(lutImagePath, '/');
+    if (!lutBasename) {
+        lutBasename = lutImagePath;
+    } else {
+        lutBasename++;
+    }
+    const char* lutExt = strrchr(lutBasename, '.');
+    size_t lutNameLen = lutExt ? (lutExt - lutBasename) : strlen(lutBasename);
+    std::string lutName(lutBasename, lutNameLen);
+
     const char* ext = strrchr(outputPath, '.');
     int success = 0;
     if (ext && (strcmp(ext, ".jpg") == 0 || strcmp(ext, ".jpeg") == 0)) {
         success = stbi_write_jpg(outputPath, imgW, imgH, 3, imgData, 95);
         if (success) {
-            std::vector<std::vector<unsigned char>> nonExifSegments = extractNonExifAppSegments(imagePath);
-            copyMetadata(imagePath, outputPath);
-            if (!nonExifSegments.empty()) {
-                insertAppSegments(outputPath, nonExifSegments);
-            }
+            copyMetadata(imagePath, outputPath, lutName.c_str());
         }
     } else {
         success = stbi_write_png(outputPath, imgW, imgH, 3, imgData, imgW * 3);

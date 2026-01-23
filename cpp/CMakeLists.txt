@@ -9,7 +9,13 @@ endif()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/external/stb)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(EXIV2 REQUIRED exiv2)
+
 add_executable(hald_clut main.cpp)
+target_link_libraries(hald_clut ${EXIV2_LIBRARIES})
+target_include_directories(hald_clut PRIVATE ${EXIV2_INCLUDE_DIRS})
+target_compile_options(hald_clut PRIVATE ${EXIV2_CFLAGS_OTHER})
 
 install(TARGETS hald_clut
     RUNTIME DESTINATION bin
