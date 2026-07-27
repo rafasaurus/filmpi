@@ -1,6 +1,7 @@
 #include "filmpi/image.h"
 
 #include <cstring>
+#include <strings.h>
 #include <utility>
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -41,7 +42,7 @@ bool saveImage(const char* path, const Image& image, int jpegQuality,
                std::string* error) {
     const char* ext = std::strrchr(path, '.');
     int ok = 0;
-    if (ext && (std::strcmp(ext, ".jpg") == 0 || std::strcmp(ext, ".jpeg") == 0)) {
+    if (ext && (strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".jpeg") == 0)) {
         ok = stbi_write_jpg(path, image.width(), image.height(), 3,
                             image.pixels(), jpegQuality);
     } else {
